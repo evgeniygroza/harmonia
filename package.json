@@ -1,0 +1,39 @@
+{
+  "name": "local-player",
+  "version": "0.1.0",
+  "description": "A minimal local music player for macOS.",
+  "main": "src/main.js",
+  "author": "Codex",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "clean:electron-xattrs": "xattr -cr node_modules/electron/dist/Electron.app 2>/dev/null || true; find node_modules/electron/dist/Electron.app -exec xattr -d com.apple.FinderInfo {} \\; -exec xattr -d 'com.apple.fileprovider.fpfs#P' {} \\; 2>/dev/null || true",
+    "start": "electron .",
+    "pack:mac": "npm run clean:electron-xattrs && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dir",
+    "dist:mac": "npm run clean:electron-xattrs && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg"
+  },
+  "dependencies": {
+    "music-metadata": "^11.12.3"
+  },
+  "devDependencies": {
+    "electron": "^42.1.0",
+    "electron-builder": "^26.8.1"
+  },
+  "build": {
+    "appId": "local.player.app",
+    "productName": "Local Player",
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.music",
+      "icon": "build/icon.icns",
+      "identity": null,
+      "target": [
+        "dmg",
+        "dir"
+      ]
+    }
+  }
+}

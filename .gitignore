@@ -1,0 +1,17 @@
+node_modules
+dist
+build
+out
+release
+
+.env
+*.sqlite
+
+.DS_Store
+
+coverage
+
+*.log
+
+.vscode
+.idea
