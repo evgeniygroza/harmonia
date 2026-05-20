@@ -1,5 +1,11 @@
 const audio = document.getElementById("audio");
 const root = document.documentElement;
+const appShell = document.getElementById("appShell");
+const licenseGate = document.getElementById("licenseGate");
+const licenseGateForm = document.getElementById("licenseGateForm");
+const licenseGateInput = document.getElementById("licenseGateInput");
+const licenseGateSubmit = document.getElementById("licenseGateSubmit");
+const licenseGateMessage = document.getElementById("licenseGateMessage");
 const viewRoot = document.getElementById("viewRoot");
 const viewTitle = document.getElementById("viewTitle");
 const viewSubtitle = document.getElementById("viewSubtitle");
@@ -19,8 +25,7 @@ const panelQuality = document.getElementById("panelQuality");
 const panelCurrentTime = document.getElementById("panelCurrentTime");
 const panelDuration = document.getElementById("panelDuration");
 const panelProgressFill = document.getElementById("panelProgressFill");
-const panelTabBody = document.getElementById("panelTabBody");
-const panelTabs = Array.from(document.querySelectorAll("[data-panel-tab]"));
+const panelInfoBody = document.getElementById("panelInfoBody");
 const showCurrentInFinder = document.getElementById("showCurrentInFinder");
 const miniHealthScore = document.getElementById("miniHealthScore");
 
@@ -53,12 +58,8 @@ const VALID_VIEWS = new Set([
   "playlists",
   "health",
   "duplicates",
-  "replayGain",
   "scanner",
   "general",
-  "activation",
-  "audio",
-  "backups",
   "advanced"
 ]);
 
@@ -75,39 +76,26 @@ const VIEW_TITLES = {
   playlists: "Playlists",
   health: "Library Health",
   duplicates: "Duplicates",
-  replayGain: "ReplayGain",
   scanner: "File Scanner",
   general: "General",
-  activation: "Activation",
-  audio: "Audio",
-  backups: "Backups",
   advanced: "Advanced"
 };
 
 const fallbackApi = {
   loadLibrary: async () => ({ tracks: [], playlists: [], currentId: "" }),
   saveLibrary: async () => ({ ok: true }),
-  openFiles: async () => [],
-  openFolder: async () => [],
+  saveLibrarySync: () => ({ ok: true }),
   chooseLibraryFolder: async () => ({ ok: false, canceled: true }),
   scanLibrary: async () => ({ ok: false, reason: "electron-api-unavailable" }),
-  scanFlacFolder: async () => ({ ok: false, reason: "electron-api-unavailable" }),
   cancelLibraryScan: async () => ({ ok: false }),
-  cancelFlacScan: async () => ({ ok: false }),
   getTracks: async () => [],
-  getFlacTracks: async () => [],
   getLibraryStats: async () => null,
   getProblemTracks: async () => [],
   getPotentialDuplicates: async () => [],
-  getDuplicateCandidates: async () => [],
   showItemInFolder: async () => ({ ok: false }),
-  analyzeReplayGainTrack: async () => ({ ok: false, reason: "not-implemented" }),
-  analyzeReplayGainAlbum: async () => ({ ok: false, reason: "not-implemented" }),
   activateLicense: async () => ({ success: false, code: "SERVER_ERROR", message: "Server unavailable" }),
   validateLicense: async () => ({ success: false, code: "SERVER_ERROR", message: "Server unavailable" }),
-  deactivateLicense: async () => ({ success: false, code: "SERVER_ERROR", message: "Server unavailable" }),
   getLicenseState: async () => ({ active: false, status: "inactive" }),
-  getLifecycleStatus: async () => null,
   onFlacScanProgress: () => {},
   onFlacScanComplete: () => {},
   onImportedTracks: () => {},
@@ -119,6 +107,11 @@ const fallbackApi = {
 
 const api = window.playerApi || fallbackApi;
 const systemPrefersDark = window.matchMedia("(prefers-color-scheme: dark)");
+const THEME_OPTIONS = new Set(["dark", "light", "system"]);
+
+function normalizedTheme(value) {
+  return THEME_OPTIONS.has(value) ? value : "dark";
+}
 
 const state = {
   view: VALID_VIEWS.has(localStorage.getItem("workspaceView")) ? localStorage.getItem("workspaceView") : "albums",
@@ -129,16 +122,14 @@ const state = {
   libraryStats: null,
   problemTracks: [],
   duplicateGroups: [],
-  lifecycleStatus: null,
   playlists: readJson("playlists", []),
   favoriteTracks: new Set(readJson("favoriteTracks", [])),
   favoriteAlbums: new Set(readJson("favoriteAlbums", [])),
   recentPlays: readJson("recentPlays", []),
   reviewedDuplicates: new Set(readJson("reviewedDuplicates", [])),
   settings: {
-    theme: readJson("settings", {}).theme || "dark",
-    startup: readJson("settings", {}).startup || "restore",
-    audioBuffer: readJson("settings", {}).audioBuffer || "medium"
+    theme: normalizedTheme(readJson("settings", {}).theme),
+    startup: readJson("settings", {}).startup || "restore"
   },
   license: {
     active: false,
@@ -151,19 +142,16 @@ const state = {
     maskedLicenseKey: "",
     offline: false
   },
-  activation: {
-    key: "",
-    status: "idle",
-    message: ""
+  gate: {
+    status: "checking",
+    message: "Checking access key...",
+    key: ""
   },
   albumDetailKey: "",
   artistDetailKey: "",
   playlistDetailId: "",
   activeFilter: null,
   selectedTrackId: "",
-  selectedDuplicateKey: "",
-  duplicateMode: "tracks",
-  panelTab: "info",
   albumLayout: localStorage.getItem("albumLayout") || "grid",
   albumSort: localStorage.getItem("albumSort") || "recent",
   trackSort: localStorage.getItem("trackSort") || "title",
@@ -176,11 +164,6 @@ const state = {
   isRestoring: false,
   shuffle: localStorage.getItem("shuffle") === "true",
   repeat: localStorage.getItem("repeat") || "off",
-  scannerOptions: {
-    includeSubfolders: readJson("scannerOptions", {}).includeSubfolders !== false,
-    updateExisting: readJson("scannerOptions", {}).updateExisting !== false,
-    markMissing: readJson("scannerOptions", {}).markMissing !== false
-  },
   scan: {
     running: false,
     rootPath: "",
@@ -229,24 +212,43 @@ function saveCollections() {
   writeJson("favoriteAlbums", Array.from(state.favoriteAlbums));
   writeJson("recentPlays", state.recentPlays);
   writeJson("reviewedDuplicates", Array.from(state.reviewedDuplicates));
-  writeJson("scannerOptions", state.scannerOptions);
   writeJson("queueIds", state.queueIds);
+}
+
+function librarySnapshot() {
+  return {
+    currentId: getCurrentTrack()?.id || "",
+    tracks: state.tracks,
+    playlists: state.playlists
+  };
+}
+
+function persistLibraryNow() {
+  saveCollections();
+  window.clearTimeout(persistTimer);
+
+  if (state.isRestoring) {
+    return Promise.resolve({ ok: false, reason: "restoring" });
+  }
+
+  return api.saveLibrary(librarySnapshot()).catch(() => ({ ok: false }));
+}
+
+function persistLibrarySync() {
+  saveCollections();
+  window.clearTimeout(persistTimer);
+
+  if (state.isRestoring) {
+    return { ok: false, reason: "restoring" };
+  }
+
+  return api.saveLibrarySync?.(librarySnapshot()) || { ok: false };
 }
 
 function persistLibrarySoon() {
   saveCollections();
   window.clearTimeout(persistTimer);
-  persistTimer = window.setTimeout(() => {
-    if (state.isRestoring) {
-      return;
-    }
-
-    api.saveLibrary({
-      currentId: getCurrentTrack()?.id || "",
-      tracks: state.tracks,
-      playlists: state.playlists
-    }).catch(() => {});
-  }, 220);
+  persistTimer = window.setTimeout(() => persistLibraryNow(), 220);
 }
 
 function scheduleRender() {
@@ -288,6 +290,12 @@ function iconButton(label, pathData, className = "icon-button") {
   button.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${pathData}</svg>`;
   return button;
 }
+
+const ICON_PLAY = '<path d="M8 5v14l11-7L8 5Z"></path>';
+const ICON_PAUSE = '<path d="M8 5h3v14H8zM13 5h3v14h-3z"></path>';
+const ICON_HEART = '<path d="M12 21s-7-4.35-9.2-8.45C1 9.2 3.3 5 7.1 5c2.1 0 3.6 1.2 4.9 2.7C13.3 6.2 14.8 5 16.9 5c3.8 0 6.1 4.2 4.3 7.55C19 16.65 12 21 12 21Z"></path>';
+const ICON_FOLDER = '<path d="M3 6.5A2.5 2.5 0 0 1 5.5 4H10l2 2h6.5A2.5 2.5 0 0 1 21 8.5v8A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5v-10Z"></path><path d="M9 13h6"></path>';
+const ICON_EDIT = '<path d="M12 20h9"></path><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5Z"></path>';
 
 function normalized(value) {
   return String(value || "").toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "");
@@ -434,14 +442,9 @@ function trackQualityLabel(track) {
   return parts.join(" / ");
 }
 
-function qualityBadge(text, variant = "") {
-  const badge = makeNode("span", `quality-badge ${variant}`, text || "-");
-  return badge;
-}
-
 function stableHash(seed) {
   let hash = 2166136261;
-  const text = String(seed || "Local Player");
+  const text = String(seed || "Harmonia");
   for (let index = 0; index < text.length; index += 1) {
     hash ^= text.charCodeAt(index);
     hash = Math.imul(hash, 16777619);
@@ -461,7 +464,7 @@ function coverColors(seed) {
 function coverInitials(primary, secondary = "") {
   const words = `${primary || ""} ${secondary || ""}`.trim().split(/\s+/).filter(Boolean);
   if (words.length === 0) {
-    return "LP";
+    return "H";
   }
   return words.slice(0, 2).map((word) => word[0]).join("").toUpperCase();
 }
@@ -493,7 +496,7 @@ function createCover({ imageUrl = "", title = "", subtitle = "", seed = "", clas
   return cover;
 }
 
-function applyCoverToBox(box, track, fallbackTitle = "LP") {
+function applyCoverToBox(box, track, fallbackTitle = "H") {
   const title = track ? getTitle(track) : fallbackTitle;
   const artist = track ? getArtist(track) : "";
   const colors = coverColors(`${title} ${artist}`);
@@ -501,7 +504,7 @@ function applyCoverToBox(box, track, fallbackTitle = "LP") {
   box.style.setProperty("--cover-b", colors.b);
   box.style.setProperty("--cover-c", colors.c);
   box.style.backgroundImage = "";
-  box.textContent = track ? coverInitials(title, artist) : "LP";
+  box.textContent = track ? coverInitials(title, artist) : "H";
 
   if (track?.artworkUrl) {
     box.textContent = "";
@@ -520,9 +523,14 @@ function normalizeTrack(track) {
     title: getTitle(track),
     artist: track?.artist || "",
     album: track?.album || "",
+    genre: Array.isArray(track?.genre) ? track.genre[0] || "" : track?.genre || "",
+    composer: Array.isArray(track?.composer) ? track.composer.join(", ") : track?.composer || "",
+    year: track?.year || "",
+    date: track?.date || "",
+    tagEdited: track?.tagEdited === true,
+    fileSize: Number(track?.fileSize || 0),
     extension: track?.extension || (path.split(".").pop() || "FLAC").toUpperCase(),
-    addedAt: trackAddedAt(track) || new Date().toISOString(),
-    replayGainStatus: track?.replayGainStatus || "not_analyzed"
+    addedAt: trackAddedAt(track) || new Date().toISOString()
   };
 }
 
@@ -566,12 +574,19 @@ function mergeTracks(incomingTracks) {
       continue;
     }
 
+    const existing = state.tracks[index];
+    const preservesEditedTags = existing.tagEdited === true;
     state.tracks[index] = {
       ...state.tracks[index],
       ...track,
-      artworkUrl: state.tracks[index].artworkUrl || track.artworkUrl || "",
-      artworkPath: state.tracks[index].artworkPath || track.artworkPath || "",
-      addedAt: state.tracks[index].addedAt || track.addedAt
+      genre: preservesEditedTags ? existing.genre : track.genre,
+      composer: preservesEditedTags ? existing.composer : track.composer,
+      year: preservesEditedTags ? existing.year : track.year,
+      date: preservesEditedTags ? existing.date : track.date,
+      tagEdited: preservesEditedTags || track.tagEdited === true,
+      artworkUrl: existing.artworkUrl || track.artworkUrl || "",
+      artworkPath: existing.artworkPath || track.artworkPath || "",
+      addedAt: existing.addedAt || track.addedAt
     };
   }
 
@@ -580,7 +595,11 @@ function mergeTracks(incomingTracks) {
     loadCurrentTrack(false, false);
   }
 
-  persistLibrarySoon();
+  if (added > 0) {
+    persistLibraryNow();
+  } else {
+    persistLibrarySoon();
+  }
   scheduleRender();
   renderPlayer();
   return added;
@@ -761,6 +780,10 @@ function getCurrentTrack() {
 }
 
 function setView(view) {
+  if (!isProActive()) {
+    showLicenseGate("Enter a valid access key to continue.");
+    return;
+  }
   if (!VALID_VIEWS.has(view)) {
     return;
   }
@@ -789,6 +812,10 @@ function goBack() {
 
 function render() {
   updateTheme();
+  renderLicenseGate();
+  if (!isProActive()) {
+    return;
+  }
   updateSidebar();
   updateHeader();
   viewRoot.replaceChildren();
@@ -809,10 +836,50 @@ function render() {
   updateActiveTrackRows();
 }
 
+function showLicenseGate(message = "Enter your access key to unlock Harmonia.") {
+  state.gate.status = state.gate.status === "validating" ? "validating" : "idle";
+  state.gate.message = message;
+  renderLicenseGate();
+}
+
+function hideLicenseGate() {
+  state.gate.status = "unlocked";
+  state.gate.key = "";
+  state.gate.message = "";
+  renderLicenseGate();
+}
+
+function renderLicenseGate() {
+  const unlocked = isProActive();
+  document.body.classList.toggle("license-pending", !unlocked);
+  document.body.classList.toggle("license-unlocked", unlocked);
+
+  if (appShell) {
+    appShell.hidden = !unlocked;
+    appShell.setAttribute("aria-hidden", String(!unlocked));
+  }
+
+  if (!licenseGate || !licenseGateForm || !licenseGateInput || !licenseGateSubmit || !licenseGateMessage) {
+    return;
+  }
+
+  licenseGate.hidden = unlocked;
+  licenseGate.setAttribute("aria-hidden", String(unlocked));
+  licenseGateForm.hidden = state.gate.status === "checking";
+  licenseGateInput.disabled = state.gate.status === "validating";
+  licenseGateSubmit.disabled = state.gate.status === "validating";
+  licenseGateSubmit.textContent = state.gate.status === "validating" ? "Checking..." : "Unlock";
+  licenseGateMessage.textContent = state.gate.message || "Enter your access key to unlock Harmonia.";
+
+  if (!unlocked && document.activeElement === document.body && state.gate.status !== "checking") {
+    licenseGateInput.focus();
+  }
+}
+
 function updateTheme() {
   const resolved = state.settings.theme === "system"
-    ? systemPrefersDark.matches ? "dark" : "dark"
-    : "dark";
+    ? systemPrefersDark.matches ? "dark" : "light"
+    : normalizedTheme(state.settings.theme);
   root.dataset.theme = resolved;
   root.style.colorScheme = resolved;
 }
@@ -871,9 +938,6 @@ function subtitleForCurrentView() {
   if (state.view === "scanner") {
     return state.scan.running ? "Scanning your lossless library" : "Choose a folder and scan local FLAC files";
   }
-  if (state.view === "activation") {
-    return state.license.active ? "Harmonia Pro is active on this device" : "Enter a license key to unlock Pro tools";
-  }
   return `${countLabel(state.tracks.length)} / ${countLabel(albums.length, "album", "albums")}`;
 }
 
@@ -915,18 +979,10 @@ function renderCurrentView() {
     case "duplicates":
       renderDuplicates();
       break;
-    case "replayGain":
-      renderReplayGain();
-      break;
     case "scanner":
       renderScanner();
       break;
-    case "activation":
-      renderActivation();
-      break;
     case "general":
-    case "audio":
-    case "backups":
     case "advanced":
       renderSettings(state.view);
       break;
@@ -966,7 +1022,6 @@ function renderAlbumControls() {
     localStorage.setItem("albumLayout", value);
     render();
   });
-  const filter = makeSelect("All Albums", [["all", "All Albums"]], "all", () => {});
   const sort = makeSelect("Sort albums", [
     ["recent", "Recently Added"],
     ["release", "Release Date"],
@@ -977,10 +1032,7 @@ function renderAlbumControls() {
     localStorage.setItem("albumSort", value);
     render();
   });
-  const more = makeNode("button", "secondary-action compact", "More");
-  more.type = "button";
-  more.addEventListener("click", () => showToast("Album actions are ready for future batch tools."));
-  topbarControls.append(layout, filter, sort, more);
+  topbarControls.append(layout, sort);
 }
 
 function createAlbumCard(album) {
@@ -992,20 +1044,14 @@ function createAlbumCard(album) {
     seed: `${album.title} ${album.artist}`,
     className: "album-cover"
   });
-  const play = iconButton("Play album", '<path d="M8 5v14l11-7L8 5Z"></path>', "album-play-button");
   const title = makeNode("strong", "", album.title);
   const artist = makeNode("span", "", album.artist);
   const meta = makeNode("small", "", `${album.year} / ${countLabel(album.tracks.length)} / ${formatDuration(album.duration)}`);
 
   card.type = "button";
   card.classList.toggle("active", album.tracks.some((track) => getCurrentTrack()?.id === track.id));
-  card.append(cover, play, title, artist, meta);
-  card.addEventListener("click", (event) => {
-    if (event.target.closest(".album-play-button")) {
-      event.stopPropagation();
-      playAlbum(album);
-      return;
-    }
+  card.append(cover, title, artist, meta);
+  card.addEventListener("click", () => {
     state.albumDetailKey = album.key;
     render();
   });
@@ -1032,28 +1078,104 @@ function renderAlbumDetail() {
   const hero = makeNode("section", "album-detail-hero glass-panel");
   const copy = makeNode("div", "detail-copy");
   const actions = makeNode("div", "action-row");
-  const play = makeNode("button", "primary-action", "Play Album");
-  const favorite = makeNode("button", "secondary-action", state.favoriteAlbums.has(album.key) ? "Favorited" : "Favorite");
-  const finder = makeNode("button", "secondary-action", "Show in Finder");
+  const albumIsPlaying = isAlbumPlaying(album);
+  const albumIsFavorite = state.favoriteAlbums.has(album.key);
+  const play = iconButton(albumIsPlaying ? "Pause Album" : "Play Album", albumIsPlaying ? ICON_PAUSE : ICON_PLAY, "album-action-button album-play-action primary-action");
+  const favorite = iconButton(
+    albumIsFavorite ? "Remove from Favorites" : "Favorite",
+    ICON_HEART,
+    "album-action-button album-favorite-action secondary-action"
+  );
+  const finder = iconButton("Show in Finder", ICON_FOLDER, "album-action-button secondary-action");
+  const tagRow = createChipRow([album.genre, trackQualityLabel(album.tracks[0]), formatBytes(album.size)].filter(Boolean));
+  const editTags = iconButton("Edit album tags", ICON_EDIT, "chip-edit-button");
 
-  play.type = "button";
-  favorite.type = "button";
-  finder.type = "button";
-  play.addEventListener("click", () => playAlbum(album));
+  play.classList.toggle("active", albumIsPlaying);
+  favorite.classList.toggle("active", albumIsFavorite);
+  play.addEventListener("click", () => toggleAlbumPlayback(album));
   favorite.addEventListener("click", () => toggleAlbumFavorite(album.key));
   finder.addEventListener("click", () => showPathInFinder(album.tracks[0]));
+  editTags.addEventListener("click", () => openAlbumTagEditor(album));
+  tagRow.append(editTags);
 
   copy.append(
     makeNode("span", "eyebrow", "Album"),
     makeNode("h2", "", album.title),
     makeNode("p", "", `${album.artist} / ${album.year} / ${countLabel(album.tracks.length)} / ${formatDuration(album.duration)}`),
-    createChipRow([album.genre, trackQualityLabel(album.tracks[0]), formatBytes(album.size)].filter(Boolean))
+    tagRow
   );
   actions.append(play, favorite, finder);
   copy.append(actions);
   hero.append(cover, copy);
   detail.append(hero, renderTrackTable(album.tracks, { compact: false, context: album.tracks }));
   viewRoot.append(detail);
+}
+
+function openAlbumTagEditor(album) {
+  const overlay = makeNode("div", "modal-overlay");
+  const dialog = makeNode("section", "tag-editor-modal glass-panel");
+  const form = makeNode("form", "tag-editor-form");
+  const genreInput = tagEditorInput("Genre", album.genre === "Unknown Genre" ? "" : album.genre, "Genre");
+  const yearInput = tagEditorInput("Year", album.year === "Unknown Year" ? "" : album.year, "Year");
+  const composerValue = getComposer(album.tracks.find((track) => getComposer(track) !== "Unknown Composer") || album.tracks[0]);
+  const composerInput = tagEditorInput("Composer", composerValue === "Unknown Composer" ? "" : composerValue, "Composer");
+  const cancel = makeNode("button", "secondary-action", "Cancel");
+  const save = makeNode("button", "primary-action", "Save");
+  const actions = makeNode("div", "tag-editor-actions");
+
+  cancel.type = "button";
+  save.type = "submit";
+  cancel.addEventListener("click", () => overlay.remove());
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) {
+      overlay.remove();
+    }
+  });
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    updateAlbumTags(album.key, {
+      genre: genreInput.querySelector("input").value.trim(),
+      year: yearInput.querySelector("input").value.trim(),
+      composer: composerInput.querySelector("input").value.trim()
+    });
+    overlay.remove();
+  });
+
+  actions.append(cancel, save);
+  form.append(genreInput, yearInput, composerInput, actions);
+  dialog.append(makeNode("h2", "", "Edit Album Tags"), makeNode("p", "", album.title), form);
+  overlay.append(dialog);
+  document.body.append(overlay);
+  genreInput.querySelector("input").focus();
+}
+
+function tagEditorInput(label, value, placeholder) {
+  const wrapper = makeNode("label", "tag-editor-field");
+  const input = document.createElement("input");
+  input.type = "text";
+  input.value = value || "";
+  input.placeholder = placeholder;
+  input.autocomplete = "off";
+  input.spellcheck = false;
+  wrapper.append(makeNode("span", "", label), input);
+  return wrapper;
+}
+
+function updateAlbumTags(albumKeyValue, tags) {
+  const safeYear = String(tags.year || "").match(/\d{4}/)?.[0] || "";
+  for (const track of state.tracks) {
+    if (albumKey(track) !== albumKeyValue) {
+      continue;
+    }
+    track.genre = tags.genre || "";
+    track.year = safeYear;
+    track.date = safeYear;
+    track.composer = tags.composer || "";
+    track.tagEdited = true;
+  }
+  persistLibrarySoon();
+  showToast("Album tags updated.");
+  render();
 }
 
 function renderArtists() {
@@ -1396,7 +1518,6 @@ function renderHealth() {
     ["Cover Quality", `${stats.coveredTracks}/${stats.totalTracks || 0}`],
     ["Metadata", `${Math.max(0, stats.totalTracks * 3 - stats.missingMetadataParts)} fields ok`],
     ["Audio Files", `${stats.unreadableBrokenFiles || 0} broken`],
-    ["Loudness / ReplayGain", `${stats.replayGain?.analyzed || 0} analyzed`],
     ["Total Tracks", String(stats.totalTracks || 0)],
     ["Total Albums", String(getAlbums().length)],
     ["Total Size", formatBytes(stats.totalLibrarySize || 0)],
@@ -1441,8 +1562,7 @@ function statsForHealth() {
     missingMetadataParts: missingTitle + missingArtist + missingAlbum,
     missingCovers,
     coveredTracks: Math.max(0, totalTracks - missingCovers),
-    potentialDuplicates: base.potentialDuplicates ?? state.duplicateGroups.reduce((sum, group) => sum + group.tracks.length, 0),
-    replayGain: base.replayGain || replayGainStats()
+    potentialDuplicates: base.potentialDuplicates ?? state.duplicateGroups.reduce((sum, group) => sum + group.tracks.length, 0)
   };
 }
 
@@ -1479,11 +1599,10 @@ function healthScoreText() {
 
 function healthIssues(stats) {
   return [
-    { title: "Duplicate Albums", count: state.duplicateGroups.length, severity: "medium", action: () => setView("duplicates") },
+    { title: "Duplicate Tracks", count: state.duplicateGroups.length, severity: "medium", action: () => setView("duplicates") },
     { title: "Missing Album Covers", count: stats.missingCovers, severity: "low", action: () => reviewIssue("missingCover", "Missing covers") },
     { title: "Missing Metadata", count: stats.missingMetadataParts, severity: "medium", action: () => reviewIssue("missingMetadata", "Missing metadata") },
     { title: "Unplayable Files", count: stats.unreadableBrokenFiles, severity: "high", action: () => reviewIssue("unreadableFile", "Unplayable files") },
-    { title: "Low Quality Covers", count: stats.missingCovers, severity: "low", action: () => reviewIssue("missingCover", "Low quality or missing covers") },
     { title: "Suspicious Quality", count: state.problemTracks.filter((track) => track.qualityFlags?.lowBitDepth || track.qualityFlags?.lowSampleRate || track.qualityFlags?.missingTechnicalInfo).length, severity: "medium", action: () => reviewIssue("missingTechnicalInfo", "Suspicious quality") }
   ];
 }
@@ -1494,7 +1613,7 @@ function createIssueRow(issue) {
   review.type = "button";
   review.addEventListener("click", () => {
     if (!isProActive()) {
-      setView("activation");
+      showLicenseGate("Enter a valid access key to continue.");
       return;
     }
     issue.action();
@@ -1518,9 +1637,9 @@ function renderProLockedState(title, message) {
   const screen = makeNode("div", "settings-screen page-fade");
   const panel = makeNode("section", "pro-locked glass-panel");
   const badge = makeNode("span", "quality-badge", "Harmonia Pro");
-  const action = makeNode("button", "primary-action", "Activate");
+  const action = makeNode("button", "primary-action", "Enter License");
   action.type = "button";
-  action.addEventListener("click", () => setView("activation"));
+  action.addEventListener("click", () => showLicenseGate("Enter a valid access key to continue."));
   panel.append(
     badge,
     makeNode("h2", "", title),
@@ -1533,25 +1652,17 @@ function renderProLockedState(title, message) {
 
 function renderDuplicates() {
   if (!isProActive()) {
-    renderProLockedState("Duplicates", "Duplicate review and cleanup tools are available with Harmonia Pro.");
+    renderProLockedState("Duplicates", "Duplicate review tools are available with Harmonia Pro.");
     return;
   }
 
   const groups = state.duplicateGroups.filter((group) => !state.reviewedDuplicates.has(group.key));
   if (state.duplicateGroups.length === 0) {
-    renderEmptyState({ title: "No duplicate candidates", message: "Potential duplicates will appear after a scan finds matching artist, title and duration buckets.", actionLabel: "Scan Library", action: () => setView("scanner") });
+    renderEmptyState({ title: "No duplicate candidates", message: "Potential duplicates will appear after a scan finds matching artist, title and duration buckets.", actionLabel: "Scan Library", action: () => setView("scanner"), showArt: false });
     return;
   }
   const screen = makeNode("div", "duplicates-screen page-fade");
   const left = makeNode("section", "duplicate-list");
-  const tabs = makeSegmented([
-    ["tracks", "Tracks"],
-    ["albums", "Albums"]
-  ], state.duplicateMode, (value) => {
-    state.duplicateMode = value;
-    render();
-  });
-  left.append(tabs);
   for (const [index, group] of groups.entries()) {
     left.append(createDuplicateGroup(group, index));
   }
@@ -1566,25 +1677,16 @@ function createDuplicateGroup(group, index) {
   const card = makeNode("section", "duplicate-group glass-panel");
   const bestPath = bestDuplicateCandidatePath(group.tracks);
   const header = makeNode("div", "duplicate-head");
-  const keep = makeNode("button", "secondary-action compact", "Keep Best");
-  keep.type = "button";
-  keep.addEventListener("click", () => showToast("Safe placeholder: no files were deleted."));
-  header.append(makeNode("strong", "", `Group ${index + 1}`), makeNode("span", "", `${group.tracks.length} items`), keep);
+  header.append(makeNode("strong", "", `Group ${index + 1}`), makeNode("span", "", `${group.tracks.length} items`));
   card.append(header);
   for (const track of group.tracks) {
     const row = makeNode("div", "duplicate-row");
     const isBest = track.absolutePath === bestPath;
     row.classList.toggle("best", isBest);
-    const checkbox = document.createElement("input");
-    checkbox.type = "checkbox";
-    checkbox.addEventListener("change", () => {
-      state.selectedDuplicateKey = group.key;
-    });
     const finder = makeNode("button", "secondary-action compact", "Finder");
     finder.type = "button";
     finder.addEventListener("click", () => showPathInFinder({ path: track.absolutePath }));
     row.append(
-      checkbox,
       makeNode("strong", "", track.title || track.fileName || "Untitled Track"),
       makeNode("span", "", track.artist || "Unknown Artist"),
       makeNode("span", "", track.album || "Unknown Album"),
@@ -1630,14 +1732,10 @@ function renderDuplicatePreview(group) {
     ])
   );
   const actions = makeNode("div", "action-column");
-  const review = makeNode("button", "primary-action", "Review Duplicates");
-  const keep = makeNode("button", "secondary-action", "Keep Best");
   const finder = makeNode("button", "secondary-action", "Show in Finder");
-  review.type = keep.type = finder.type = "button";
-  review.addEventListener("click", () => showToast("Review mode is already safe: choose files, then mark as reviewed."));
-  keep.addEventListener("click", () => showToast("Safe placeholder: Keep Best never deletes files in this build."));
+  finder.type = "button";
   finder.addEventListener("click", () => showPathInFinder({ path: best.absolutePath }));
-  actions.append(review, keep, finder);
+  actions.append(finder);
   panel.append(actions);
   return panel;
 }
@@ -1649,88 +1747,6 @@ function bestDuplicateCandidatePath(tracks) {
     return right - left;
   });
   return best?.absolutePath || "";
-}
-
-function renderReplayGain() {
-  if (!isProActive()) {
-    renderProLockedState("ReplayGain", "ReplayGain analysis actions are available with Harmonia Pro.");
-    return;
-  }
-
-  const stats = replayGainStats();
-  const screen = makeNode("div", "replay-screen page-fade");
-  const cards = makeNode("div", "health-card-grid");
-  [
-    ["Analyzed", stats.analyzed || 0],
-    ["Not analyzed", stats.not_analyzed || 0],
-    ["Failed", stats.failed || 0],
-    ["Album gain ready", 0]
-  ].forEach(([label, value]) => cards.append(makeStatCard(label, String(value))));
-  const actions = makeNode("div", "action-row");
-  ["Analyze Selected", "Analyze Album", "Analyze Library"].forEach((label) => {
-    const button = makeNode("button", label === "Analyze Library" ? "primary-action" : "secondary-action", label);
-    button.type = "button";
-    button.addEventListener("click", () => queueReplayGain(label));
-    actions.append(button);
-  });
-  const tracks = getFilteredTracks();
-  const table = makeNode("div", "replay-table glass-panel");
-  table.append(makeNode("div", "replay-row replay-header", "Title / Artist / Album / State / Gain / Action"));
-  for (const track of tracks) {
-    const row = makeNode("div", "replay-row");
-    const action = makeNode("button", "secondary-action compact", "Analyze");
-    action.type = "button";
-    action.addEventListener("click", () => queueReplayGain("Analyze Selected", track));
-    row.append(
-      makeNode("strong", "", getTitle(track)),
-      makeNode("span", "", getArtist(track)),
-      makeNode("span", "", getAlbum(track)),
-      makeNode("span", "", replayGainLabel(track.replayGainStatus)),
-      makeNode("span", "", track.replayGain ? `${track.replayGain.trackGainDb} dB` : "-"),
-      action
-    );
-    table.append(row);
-  }
-  screen.append(cards, actions, table);
-  viewRoot.append(screen);
-}
-
-function replayGainStats() {
-  return state.tracks.reduce((stats, track) => {
-    const status = track.replayGainStatus || "not_analyzed";
-    stats[status] = (stats[status] || 0) + 1;
-    return stats;
-  }, { not_analyzed: 0, analyzing: 0, analyzed: 0, failed: 0 });
-}
-
-function replayGainLabel(status) {
-  return ({
-    not_analyzed: "Not analyzed",
-    analyzing: "Queued",
-    analyzed: "Analyzed",
-    failed: "Not implemented"
-  })[status || "not_analyzed"] || "Not analyzed";
-}
-
-async function queueReplayGain(label, explicitTrack = null) {
-  const track = explicitTrack || selectedTrack() || getCurrentTrack();
-  if (label !== "Analyze Library" && !track) {
-    showToast("Select a track first.");
-    return;
-  }
-  const targets = label === "Analyze Library" ? getFilteredTracks().slice(0, 50) : [track];
-  for (const item of targets) {
-    item.replayGainStatus = "analyzing";
-  }
-  render();
-  showToast("ReplayGain queued. Native loudness calculation is not implemented yet.");
-  await Promise.allSettled(targets.map((item) => api.analyzeReplayGainTrack?.(item.path)));
-  for (const item of targets) {
-    item.replayGainStatus = "failed";
-    item.replayGainError = "ReplayGain analysis is not implemented yet.";
-  }
-  persistLibrarySoon();
-  render();
 }
 
 function renderScanner() {
@@ -1750,14 +1766,6 @@ function renderScanner() {
     choose,
     start
   );
-
-  const options = makeNode("section", "scanner-options glass-panel");
-  options.append(makeNode("h2", "", "Scan Options"));
-  [
-    ["includeSubfolders", "Include subfolders"],
-    ["updateExisting", "Update existing metadata"],
-    ["markMissing", "Remove missing files from library"]
-  ].forEach(([key, label]) => options.append(createToggle(key, label)));
 
   const progress = makeNode("section", "scanner-progress glass-panel");
   const progressBar = makeNode("div", "progress-bar");
@@ -1785,21 +1793,8 @@ function renderScanner() {
       state.scan.error || "Warnings and failed files will appear here during a scan."
     )
   );
-  screen.append(drop, options, progress, log);
+  screen.append(drop, progress, log);
   viewRoot.append(screen);
-}
-
-function createToggle(key, label) {
-  const row = makeNode("label", "toggle-row");
-  const input = document.createElement("input");
-  input.type = "checkbox";
-  input.checked = Boolean(state.scannerOptions[key]);
-  input.addEventListener("change", () => {
-    state.scannerOptions[key] = input.checked;
-    saveCollections();
-  });
-  row.append(input, makeNode("span", "", label));
-  return row;
 }
 
 async function chooseScanFolder() {
@@ -1819,7 +1814,7 @@ async function startScan() {
   render();
   const result = state.scan.selectedPath
     ? await api.scanLibrary?.(state.scan.selectedPath)
-    : await (api.scanLibrary?.() || api.scanFlacFolder?.());
+    : await api.scanLibrary?.();
   if (!result?.ok) {
     state.scan.running = false;
     state.scan.error = result?.canceled ? "Scan cancelled" : result?.error || result?.reason || "Scanner unavailable";
@@ -1832,7 +1827,7 @@ async function startScan() {
 }
 
 async function cancelScan() {
-  await (api.cancelLibraryScan?.() || api.cancelFlacScan?.());
+  await api.cancelLibraryScan?.();
   state.scan.running = false;
   render();
 }
@@ -1867,57 +1862,13 @@ function finishScan(result) {
   render();
 }
 
-function renderActivation() {
-  const screen = makeNode("div", "settings-screen page-fade");
-  const panel = makeNode("section", "settings-card activation-card glass-panel");
-  const input = document.createElement("input");
-  input.type = "text";
-  input.placeholder = "HARMONIA-XXXX-XXXX-XXXX-XXXX";
-  input.spellcheck = false;
-  input.autocomplete = "off";
-  input.value = state.activation.key;
-  input.disabled = state.activation.status === "validating";
-  input.addEventListener("input", () => {
-    state.activation.key = input.value;
-    state.activation.status = "idle";
-    state.activation.message = "";
-  });
-
-  const activate = makeNode("button", "primary-action", state.activation.status === "validating" ? "Activating..." : "Activate");
-  activate.type = "button";
-  activate.disabled = state.activation.status === "validating";
-  activate.addEventListener("click", activateLicenseFromInput);
-
-  const form = makeNode("div", "activation-form");
-  form.append(input, activate);
-
-  const statusClass = state.activation.status === "error" ? "activation-message error" : "activation-message";
-  const message = state.activation.message || (state.license.active ? "Harmonia Pro is active on this device." : "Paste your license key to unlock Pro tools.");
-
-  panel.append(
-    makeNode("h2", "", "Harmonia Pro"),
-    form,
-    makeNode("p", statusClass, message)
-  );
-
-  screen.append(panel, licenseStatusPanel());
-  viewRoot.append(screen);
-}
-
 function licenseStatusRows() {
   return [
     settingReadout("Harmonia Pro", licenseStatusLabel()),
     settingReadout("License type", state.license.licenseType || "-"),
     settingReadout("License key", state.license.maskedLicenseKey || "-"),
     settingReadout("Activations used", state.license.activationsAllowed ? `${state.license.activationsUsed}/${state.license.activationsAllowed}` : "-"),
-    settingReadout("Last validated", formatDateTime(state.license.lastValidatedAt)),
-    settingButton(state.license.active ? "Deactivate this device" : "Activation", state.license.active ? "Deactivate" : "Activate", () => {
-      if (state.license.active) {
-        deactivateLicense();
-      } else {
-        setView("activation");
-      }
-    })
+    settingReadout("Last validated", formatDateTime(state.license.lastValidatedAt))
   ];
 }
 
@@ -1941,19 +1892,19 @@ function applyLicenseState(result) {
   };
 }
 
-async function activateLicenseFromInput() {
-  const key = state.activation.key.trim();
+async function activateLicenseFromGate() {
+  const key = state.gate.key.trim();
 
   if (!key) {
-    state.activation.status = "error";
-    state.activation.message = "Invalid license key";
-    render();
+    state.gate.status = "error";
+    state.gate.message = "Enter a valid access key to continue.";
+    renderLicenseGate();
     return;
   }
 
-  state.activation.status = "validating";
-  state.activation.message = "Validating license...";
-  render();
+  state.gate.status = "validating";
+  state.gate.message = "Checking access key...";
+  renderLicenseGate();
 
   const result = await api.activateLicense?.(key).catch(() => ({
     success: false,
@@ -1963,44 +1914,25 @@ async function activateLicenseFromInput() {
 
   if (result?.success) {
     applyLicenseState(result);
-    state.activation.key = "";
-    state.activation.status = "success";
-    state.activation.message = result.message || "Harmonia activated";
-    showToast("Harmonia Pro activated.");
-  } else {
-    state.activation.status = "error";
-    state.activation.message = activationErrorMessage(result);
+    hideLicenseGate();
+    showToast("Harmonia unlocked.");
+    await restoreAfterUnlock();
+    render();
+    return;
   }
 
-  render();
-}
-
-async function deactivateLicense() {
-  const result = await api.deactivateLicense?.().catch(() => ({
-    success: false,
-    code: "SERVER_ERROR",
-    message: "Server unavailable"
-  }));
-
-  if (result?.success) {
-    applyLicenseState(result);
-    state.activation.status = "idle";
-    state.activation.message = "";
-    showToast("Harmonia Pro deactivated.");
-  } else {
-    applyLicenseState(result);
-    showToast(activationErrorMessage(result));
-  }
-
-  render();
+  applyLicenseState(result);
+  state.gate.status = "error";
+  state.gate.message = activationErrorMessage(result);
+  renderLicenseGate();
 }
 
 function renderSettings(view) {
   const screen = makeNode("div", "settings-screen page-fade");
   if (view === "general") {
     screen.append(settingsPanel("Preferences", [
-      settingSegment("Theme", [["dark", "Dark"], ["system", "System"]], state.settings.theme, (value) => {
-        state.settings.theme = value;
+      settingSegment("Theme", [["dark", "Dark"], ["light", "Light"], ["system", "System"]], state.settings.theme, (value) => {
+        state.settings.theme = normalizedTheme(value);
         saveSettings();
         render();
       }),
@@ -2014,36 +1946,10 @@ function renderSettings(view) {
         showToast("UI state reset. Restart the app to apply all defaults.");
       })
     ]), licenseStatusPanel());
-  } else if (view === "audio") {
-    screen.append(settingsPanel("Audio Output", [
-      settingReadout("Output Device", "System Output"),
-      settingToggle("Exclusive Mode", false, true),
-      settingSelect("Sample Rate", [["auto", "Auto"], ["44100", "44.1 kHz"], ["48000", "48 kHz"], ["96000", "96 kHz"]], "auto", () => {}),
-      settingSelect("Bit Depth", [["auto", "Auto"], ["16", "16-bit"], ["24", "24-bit"]], "auto", () => {}),
-      settingToggle("DSD Support", false, true),
-      settingSelect("Audio Buffer", [["small", "Small"], ["medium", "Medium"], ["large", "Large"]], state.settings.audioBuffer, (value) => {
-        state.settings.audioBuffer = value;
-        saveSettings();
-      }),
-      settingReadout("Audio Path", "Chromium/Electron system mixer")
-    ]));
-  } else if (view === "backups") {
-    screen.append(settingsPanel("Backups", [
-      settingButton("Backup database", "Prepare", () => showToast("Safe placeholder: database backup action is not connected yet.")),
-      settingButton("Export library report", "Export", () => exportLibraryReport()),
-      settingButton("Restore backup", "Restore", () => showToast("Safe placeholder: restore requires a file picker flow.")),
-      settingReadout("Backup location", "App data / local-player")
-    ]));
   } else {
-    screen.append(settingsPanel("Advanced", [
-      settingButton("Clear artwork cache", "Clear", () => showToast("Cache clear queued for the next startup.")),
+    screen.append(settingsPanel("Maintenance", [
       settingButton("Rebuild library index", "Rebuild", () => refreshScannedLibrary().then(() => showToast("Library index refreshed."))),
-      settingButton("Open logs folder", "Open", () => showToast("Logs folder action is prepared for a future native helper.")),
-      settingButton("Future Pro tools", isProActive() ? "Ready" : "Activate", () => {
-        if (!isProActive()) {
-          setView("activation");
-        }
-      }),
+      settingReadout("Audio Path", "Chromium/Electron system mixer"),
       settingReadout("Diagnostics", `Electron renderer / ${navigator.platform}`)
     ]));
   }
@@ -2081,27 +1987,6 @@ function settingButton(label, buttonLabel, onClick) {
   button.addEventListener("click", onClick);
   row.append(makeNode("span", "", label), button);
   return row;
-}
-
-function settingToggle(label, checked, disabled = false) {
-  const row = makeNode("label", "setting-row");
-  const input = document.createElement("input");
-  input.type = "checkbox";
-  input.checked = checked;
-  input.disabled = disabled;
-  row.append(makeNode("span", "", label), input);
-  return row;
-}
-
-function exportLibraryReport() {
-  const report = {
-    exportedAt: new Date().toISOString(),
-    tracks: state.tracks.length,
-    albums: getAlbums().length,
-    health: calculateHealthScore()
-  };
-  console.info("[Local Player] Library report", report);
-  showToast("Library report emitted to diagnostics console.");
 }
 
 function makeSegmented(options, value, onChange) {
@@ -2152,12 +2037,15 @@ function createKeyValueGrid(items) {
   return grid;
 }
 
-function renderEmptyState({ title, message, actionLabel, action }) {
+function renderEmptyState({ title, message, actionLabel, action, showArt = true }) {
   const empty = makeNode("section", "empty-state glass-panel page-fade");
   const actionButton = makeNode("button", "primary-action", actionLabel);
   actionButton.type = "button";
   actionButton.addEventListener("click", action);
-  empty.append(makeNode("div", "empty-art", "LP"), makeNode("h2", "", title), makeNode("p", "", message), actionButton);
+  if (showArt) {
+    empty.append(makeNode("div", "empty-art", "H"));
+  }
+  empty.append(makeNode("h2", "", title), makeNode("p", "", message), actionButton);
   viewRoot.append(empty);
 }
 
@@ -2177,6 +2065,23 @@ function clearSearchAndFilter() {
 
 function selectedTrack() {
   return state.tracks.find((track) => track.id === state.selectedTrackId) || null;
+}
+
+function isCurrentAlbum(album) {
+  const currentId = getCurrentTrack()?.id || "";
+  return Boolean(currentId && album?.tracks?.some((track) => track.id === currentId));
+}
+
+function isAlbumPlaying(album) {
+  return state.isPlaying && isCurrentAlbum(album);
+}
+
+function toggleAlbumPlayback(album) {
+  if (isAlbumPlaying(album)) {
+    audio.pause();
+    return;
+  }
+  playAlbum(album);
 }
 
 function playAlbum(album) {
@@ -2311,7 +2216,7 @@ function renderPlayer() {
   playPauseButton.setAttribute("aria-label", state.isPlaying ? "Pause" : "Play");
   shuffleButton.classList.toggle("active", state.shuffle);
   repeatButton.classList.toggle("active", state.repeat !== "off");
-  outputStatus.textContent = track?.sampleRate ? `DAC / ${formatSampleRate(track.sampleRate)}` : "System Output";
+  outputStatus.textContent = track ? `${track.extension || "FLAC"}${track.sampleRate ? ` / ${formatSampleRate(track.sampleRate)}` : ""}` : "FLAC";
 
   if (!track) {
     applyCoverToBox(barCover, null);
@@ -2349,6 +2254,7 @@ function renderNowPanel() {
   const score = calculateHealthScore();
   miniHealthScore.textContent = score.value === null ? "Needs scan" : `${score.value}% / ${score.status}`;
   panelFavorite.classList.toggle("active", Boolean(track && state.favoriteTracks.has(track.id)));
+  panelFavorite.setAttribute("aria-label", track && state.favoriteTracks.has(track.id) ? "Remove from Favorites" : "Favorite");
   showCurrentInFinder.disabled = !track;
 
   if (!track) {
@@ -2358,7 +2264,7 @@ function renderNowPanel() {
     panelArtist.textContent = "Scan or open music to begin.";
     panelAlbum.textContent = "";
     panelQuality.textContent = "Ready";
-    panelTabBody.replaceChildren(createInlineEmpty("Nothing playing", "Metadata, lyrics and file details appear here after selection."));
+    panelInfoBody.replaceChildren(createInlineEmpty("Nothing playing", "Metadata and file details appear here after selection."));
     return;
   }
 
@@ -2372,15 +2278,8 @@ function renderNowPanel() {
 }
 
 function renderPanelTab(track) {
-  panelTabBody.replaceChildren();
-  for (const button of panelTabs) {
-    button.classList.toggle("active", button.dataset.panelTab === state.panelTab);
-  }
-  if (state.panelTab === "lyrics") {
-    panelTabBody.append(createInlineEmpty("No lyrics embedded", "Lyrics support is ready for tagged files when text data is available."));
-    return;
-  }
-  panelTabBody.append(createKeyValueGrid([
+  panelInfoBody.replaceChildren();
+  panelInfoBody.append(createKeyValueGrid([
     ["Title", getTitle(track)],
     ["Artist", getArtist(track)],
     ["Album", getAlbum(track)],
@@ -2452,33 +2351,14 @@ function latestScanDate() {
   return dates.length ? formatDate(dates[dates.length - 1]) : "Needs scan";
 }
 
-async function importTracks(importer) {
-  state.isImporting = true;
-  render();
-  try {
-    const tracks = await importer();
-    const added = mergeTracks(tracks);
-    showToast(added ? `${added} tracks imported.` : "No new tracks imported.");
-  } catch (error) {
-    showToast(error?.message || "Import failed.");
-  } finally {
-    state.isImporting = false;
-    render();
-  }
-}
-
 async function refreshScannedLibrary() {
   const [tracks, stats, problemTracks, duplicateGroups] = await Promise.all([
-    (api.getTracks?.() || api.getFlacTracks?.()).catch(() => []),
+    api.getTracks?.().catch(() => []),
     api.getLibraryStats?.().catch(() => null),
     api.getProblemTracks?.().catch(() => []),
-    (api.getPotentialDuplicates?.() || api.getDuplicateCandidates?.()).catch(() => [])
+    api.getPotentialDuplicates?.().catch(() => [])
   ]);
   applyScannedPayload({ tracks, stats, problemTracks, duplicateGroups });
-}
-
-async function refreshLifecycleStatus() {
-  state.lifecycleStatus = await api.getLifecycleStatus?.().catch(() => null);
 }
 
 async function refreshLicenseState() {
@@ -2511,6 +2391,29 @@ async function restoreLibrary() {
 }
 
 function wireEvents() {
+  licenseGateForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    activateLicenseFromGate();
+  });
+  licenseGateInput?.addEventListener("input", () => {
+    state.gate.key = licenseGateInput.value;
+    if (state.gate.status !== "validating") {
+      state.gate.status = "idle";
+      state.gate.message = "Enter your access key to unlock Harmonia.";
+      renderLicenseGate();
+    }
+  });
+  licenseGateInput?.addEventListener("paste", () => {
+    window.setTimeout(() => {
+      state.gate.key = licenseGateInput.value;
+      if (state.gate.status !== "validating") {
+        state.gate.status = "idle";
+        state.gate.message = "Access key pasted. Press Unlock to continue.";
+        renderLicenseGate();
+      }
+    }, 0);
+  });
+
   navItems.forEach((item) => item.addEventListener("click", () => setView(item.dataset.view)));
   backButton.addEventListener("click", goBack);
   sidebarScan.addEventListener("click", () => setView("scanner"));
@@ -2541,10 +2444,16 @@ function wireEvents() {
   showCurrentInFinder.addEventListener("click", () => showPathInFinder());
   document.querySelector("[data-jump-view='health']").addEventListener("click", () => setView("health"));
 
-  panelTabs.forEach((button) => button.addEventListener("click", () => {
-    state.panelTab = button.dataset.panelTab;
-    renderNowPanel();
-  }));
+  const handleSystemThemeChange = () => {
+    if (state.settings.theme === "system") {
+      render();
+    }
+  };
+  if (typeof systemPrefersDark.addEventListener === "function") {
+    systemPrefersDark.addEventListener("change", handleSystemThemeChange);
+  } else if (typeof systemPrefersDark.addListener === "function") {
+    systemPrefersDark.addListener(handleSystemThemeChange);
+  }
 
   volumeInput.addEventListener("input", () => {
     audio.volume = Number(volumeInput.value);
@@ -2566,12 +2475,20 @@ function wireEvents() {
   audio.addEventListener("play", () => {
     state.isPlaying = true;
     recordRecentPlay(getCurrentTrack());
-    renderPlayer();
-    updateActiveTrackRows();
+    if (state.albumDetailKey) {
+      render();
+    } else {
+      renderPlayer();
+      updateActiveTrackRows();
+    }
   });
   audio.addEventListener("pause", () => {
     state.isPlaying = false;
-    renderPlayer();
+    if (state.albumDetailKey) {
+      render();
+    } else {
+      renderPlayer();
+    }
   });
   audio.addEventListener("timeupdate", () => renderPlaybackProgress());
   audio.addEventListener("durationchange", () => renderPlaybackProgress());
@@ -2611,6 +2528,12 @@ function wireEvents() {
     }
   });
 
+  window.addEventListener("beforeunload", () => {
+    if (isProActive()) {
+      persistLibrarySync();
+    }
+  });
+
   api.onFlacScanProgress?.(updateScanProgress);
   api.onFlacScanComplete?.(finishScan);
   api.onImportedTracks?.((tracks) => mergeTracks(tracks));
@@ -2632,13 +2555,24 @@ function wireEvents() {
 
 async function initializeApp() {
   wireEvents();
-  render();
+  updateTheme();
+  renderLicenseGate();
+  await refreshLicenseState().catch(() => {});
+
+  if (!isProActive()) {
+    state.gate.status = "idle";
+    state.gate.message = "Enter a valid access key to continue.";
+    renderLicenseGate();
+    return;
+  }
+
+  hideLicenseGate();
+  await restoreAfterUnlock();
+}
+
+async function restoreAfterUnlock() {
   await restoreLibrary();
-  await Promise.all([
-    refreshScannedLibrary().catch(() => {}),
-    refreshLifecycleStatus().catch(() => {}),
-    refreshLicenseState().catch(() => {})
-  ]);
+  await refreshScannedLibrary().catch(() => {});
   render();
   api.supportedExtensions?.().then((extensions) => {
     if (Array.isArray(extensions) && extensions.length) {

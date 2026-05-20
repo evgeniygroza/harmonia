@@ -72,8 +72,6 @@ function createLibraryStore(storePath) {
     const index = data.tracks.findIndex((item) => item.absolutePath === track.absolutePath);
     const previous = index >= 0 ? data.tracks[index] : {};
     const merged = {
-      replayGainStatus: "not_analyzed",
-      replayGain: null,
       ...previous,
       ...track,
       absolutePath: track.absolutePath,
@@ -93,21 +91,6 @@ function createLibraryStore(storePath) {
   async function getTracks() {
     const data = await ensureLoaded();
     return enrichTracks([...data.tracks].sort((a, b) => String(a.absolutePath).localeCompare(String(b.absolutePath))));
-  }
-
-  async function getTrackByPath(filePath) {
-    const data = await ensureLoaded();
-    const track = data.tracks.find((item) => item.absolutePath === filePath);
-
-    if (!track) {
-      return null;
-    }
-
-    const duplicates = duplicatePathSet(data.tracks);
-    return {
-      ...track,
-      qualityFlags: getQualityFlags(track, duplicates)
-    };
   }
 
   async function deleteMissingTracks(existingPaths, options = {}) {
@@ -156,13 +139,7 @@ function createLibraryStore(storePath) {
       missingCovers: 0,
       potentialDuplicates: duplicateGroups.reduce((sum, group) => sum + group.tracks.length, 0),
       sampleRateDistribution: {},
-      bitDepthDistribution: {},
-      replayGain: {
-        not_analyzed: 0,
-        analyzing: 0,
-        analyzed: 0,
-        failed: 0
-      }
+      bitDepthDistribution: {}
     };
 
     for (const track of tracks) {
@@ -193,8 +170,6 @@ function createLibraryStore(storePath) {
       stats.sampleRateDistribution[sampleRate] = (stats.sampleRateDistribution[sampleRate] || 0) + 1;
       stats.bitDepthDistribution[bitDepth] = (stats.bitDepthDistribution[bitDepth] || 0) + 1;
 
-      const replayGainStatus = track.replayGainStatus || "not_analyzed";
-      stats.replayGain[replayGainStatus] = (stats.replayGain[replayGainStatus] || 0) + 1;
     }
 
     return stats;
@@ -208,7 +183,6 @@ function createLibraryStore(storePath) {
   return {
     upsertTrack,
     getTracks,
-    getTrackByPath,
     deleteMissingTracks,
     getLibraryStats,
     getProblemTracks,

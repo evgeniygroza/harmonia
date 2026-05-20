@@ -279,15 +279,6 @@ function createLicenseManager({
         return { success: false, code: "INVALID_LICENSE", message: "Invalid license key" };
       }
 
-      if (endpoint === "/deactivate") {
-        await sqliteExec(localDbPath, `
-          DELETE FROM activations WHERE license_key = ${sqlString(licenseKey)} AND device_id = ${sqlString(device)};
-          UPDATE licenses SET activations_used = (SELECT COUNT(*) FROM activations WHERE license_key = ${sqlString(licenseKey)}) WHERE license_key = ${sqlString(licenseKey)};
-        `);
-        const used = await localActivationCount(licenseKey);
-        return localSuccess(license, used, "Harmonia deactivated");
-      }
-
       const existing = await sqliteJson(localDbPath, `
         SELECT id FROM activations WHERE license_key = ${sqlString(licenseKey)} AND device_id = ${sqlString(device)} LIMIT 1;
       `);
@@ -426,40 +417,6 @@ function createLicenseManager({
     return errorState(response.code || "SERVER_ERROR", response.message || "Server unavailable", cache);
   }
 
-  async function deactivateLicense() {
-    const cache = await readCache();
-
-    if (!cache?.licenseKey) {
-      await clearCache();
-      return {
-        success: true,
-        message: "Harmonia deactivated",
-        ...publicState(null, { active: false, status: "inactive" })
-      };
-    }
-
-    const requestPayload = {
-      licenseKey: cache.licenseKey,
-      deviceId: getDeviceId()
-    };
-    let response = await postJson("/deactivate", requestPayload);
-    if (response.code === "SERVER_ERROR") {
-      response = await localActivationRequest("/deactivate", requestPayload);
-    }
-
-    if (response.success || response.code === "INVALID_LICENSE" || response.code === "REVOKED_LICENSE") {
-      await clearCache();
-      return {
-        ...response,
-        ...publicState(null, { active: false, status: "inactive" }),
-        success: response.success !== false,
-        message: response.message || "Harmonia deactivated"
-      };
-    }
-
-    return errorState(response.code || "SERVER_ERROR", response.message || "Server unavailable", cache);
-  }
-
   async function getLicenseState() {
     const cache = await readCache();
     return publicState(cache);
@@ -468,7 +425,6 @@ function createLicenseManager({
   return {
     activateLicense,
     validateLicense,
-    deactivateLicense,
     getLicenseState
   };
 }

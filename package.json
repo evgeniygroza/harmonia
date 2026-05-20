@@ -1,7 +1,7 @@
 {
-  "name": "local-player",
+  "name": "harmonia",
   "version": "0.1.0",
-  "description": "A minimal local music player for macOS.",
+  "description": "Premium local-first music workspace for people who still own their music libraries",
   "main": "src/main.js",
   "author": "Codex",
   "license": "MIT",
@@ -21,7 +21,7 @@
   },
   "build": {
     "appId": "local.player.app",
-    "productName": "Local Player",
+    "productName": "Harmonia",
     "files": [
       "src/**/*",
       "package.json"

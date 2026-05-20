@@ -6,9 +6,9 @@ const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const { createLibraryStore } = require("./services/libraryStore");
 const { scanFlacLibrary } = require("./services/flacScanner");
-const replayGainService = require("./services/replayGainService");
-const { createLifecycleStubs } = require("./services/appLifecycleStubs");
 const { createLicenseManager } = require("./services/licenseManager");
+
+const APP_NAME = "Harmonia";
 
 const AUDIO_EXTENSIONS = new Set([
   ".aac",
@@ -32,14 +32,10 @@ const AUDIO_FILTER = {
   extensions: Array.from(AUDIO_EXTENSIONS, (ext) => ext.slice(1))
 };
 
-app.setName("Local Player");
+app.setName(APP_NAME);
 app.setPath("userData", path.join(app.getPath("appData"), "local-player"));
 
 const flacLibraryStore = createLibraryStore(path.join(app.getPath("userData"), "flac-library.json"));
-const lifecycleStubs = createLifecycleStubs({
-  appName: "Local Player",
-  version: app.getVersion()
-});
 const licenseManager = createLicenseManager({
   userDataPath: app.getPath("userData"),
   appVersion: app.getVersion()
@@ -81,7 +77,7 @@ function createWindow() {
     minHeight: 620,
     backgroundColor: "#241f1b",
     ...(hasDevIcon ? { icon: appIconPath } : {}),
-    title: "Local Player",
+    title: APP_NAME,
     titleBarStyle: "hiddenInset",
     trafficLightPosition: { x: 16, y: 18 },
     webPreferences: {
@@ -141,6 +137,21 @@ function createNativeMenu(win) {
           accelerator: "CmdOrCtrl+,",
           click: () => win.webContents.send("settings:open")
         }
+      ]
+    },
+    {
+      label: "Edit",
+      submenu: [
+        { role: "undo" },
+        { role: "redo" },
+        { type: "separator" },
+        { role: "cut" },
+        { role: "copy" },
+        { role: "paste" },
+        { role: "pasteAndMatchStyle" },
+        { role: "delete" },
+        { type: "separator" },
+        { role: "selectAll" }
       ]
     },
     {
@@ -280,7 +291,7 @@ async function startFlacScan(win, folderPath) {
   };
 
   activeFlacScan = scan;
-  console.info("[Local Player] FLAC scan started", { id: scan.id, rootPath });
+  console.info(`[${APP_NAME}] FLAC scan started`, { id: scan.id, rootPath });
 
   sendToWindow(win, "scanner:progress", {
     id: scan.id,
@@ -304,7 +315,7 @@ async function startFlacScan(win, folderPath) {
       });
     }
   }).then(async (result) => {
-    console.info("[Local Player] FLAC scan completed", {
+    console.info(`[${APP_NAME}] FLAC scan completed`, {
       id: scan.id,
       processed: result.processed,
       failed: result.failed
@@ -317,7 +328,7 @@ async function startFlacScan(win, folderPath) {
     });
   }).catch(async (error) => {
     const cancelled = error.code === "SCAN_CANCELLED";
-    console.info("[Local Player] FLAC scan finished with state", {
+    console.info(`[${APP_NAME}] FLAC scan finished with state`, {
       id: scan.id,
       cancelled,
       error: cancelled ? "" : error.message
@@ -520,6 +531,14 @@ async function artworkFromFolder(filePath) {
 
 async function toTrack(filePath) {
   const ext = path.extname(filePath).toLowerCase();
+  let stats = null;
+
+  try {
+    stats = await fs.stat(filePath);
+  } catch {
+    stats = null;
+  }
+
   const baseTrack = {
     id: filePath,
     path: filePath,
@@ -528,6 +547,7 @@ async function toTrack(filePath) {
     artist: "",
     album: "",
     duration: 0,
+    fileSize: stats?.size || 0,
     extension: ext.replace(".", "").toUpperCase(),
     folder: path.dirname(filePath),
     artworkPath: "",
@@ -549,6 +569,10 @@ async function toTrack(filePath) {
       title: common.title || baseTrack.title,
       artist: common.artist || common.albumartist || "",
       album: common.album || "",
+      genre: Array.isArray(common.genre) ? common.genre[0] || "" : "",
+      composer: Array.isArray(common.composer) ? common.composer.join(", ") : "",
+      year: common.year ? String(common.year) : "",
+      date: common.date || "",
       duration: Number.isFinite(format.duration) ? format.duration : 0,
       codec: format.codec || "",
       bitrate: format.bitrate || 0,
@@ -582,7 +606,12 @@ function toSavedTrack(track) {
     title: stringValue(track.title) || fallbackTitle(filePath),
     artist: stringValue(track.artist),
     album: stringValue(track.album),
+    genre: Array.isArray(track.genre) ? stringValue(track.genre[0]) : stringValue(track.genre),
+    composer: Array.isArray(track.composer) ? track.composer.map(stringValue).filter(Boolean).join(", ") : stringValue(track.composer),
+    year: stringValue(track.year),
+    date: stringValue(track.date),
     duration: numberValue(track.duration),
+    fileSize: numberValue(track.fileSize),
     extension: stringValue(track.extension) || ext.replace(".", "").toUpperCase(),
     folder: stringValue(track.folder) || path.dirname(filePath),
     codec: stringValue(track.codec),
@@ -597,7 +626,7 @@ function toSavedTrack(track) {
     scanRootPath: stringValue(track.scanRootPath),
     scanStatus: stringValue(track.scanStatus),
     scanError: stringValue(track.scanError),
-    replayGainStatus: stringValue(track.replayGainStatus),
+    tagEdited: booleanValue(track.tagEdited),
     hasEmbeddedCover: booleanValue(track.hasEmbeddedCover),
     hasTitleMetadata: booleanValue(track.hasTitleMetadata),
     hasArtistMetadata: booleanValue(track.hasArtistMetadata),
@@ -613,6 +642,14 @@ async function normalizeSavedTrack(track) {
   }
 
   const saved = toSavedTrack(track);
+  if (!saved.fileSize) {
+    try {
+      const stats = await fs.stat(filePath);
+      saved.fileSize = stats.size || 0;
+    } catch {
+      saved.fileSize = 0;
+    }
+  }
   const artworkExists = saved.artworkPath && await pathExists(saved.artworkPath);
 
   if (!saved.artworkChecked || saved.artworkPath && !artworkExists) {
@@ -638,31 +675,52 @@ async function readSavedLibrary() {
 
     return {
       tracks: normalizedTracks.filter(Boolean),
-      currentId: stringValue(saved.currentId)
+      currentId: stringValue(saved.currentId),
+      playlists: Array.isArray(saved.playlists) ? saved.playlists : []
     };
   } catch {
     return {
       tracks: [],
-      currentId: ""
+      currentId: "",
+      playlists: []
     };
   }
 }
 
-async function writeSavedLibrary(library) {
+function savedLibraryPayload(library) {
   const tracks = Array.isArray(library?.tracks) ? library.tracks : [];
-  const payload = {
+  const playlists = Array.isArray(library?.playlists) ? library.playlists : [];
+  return {
     version: 1,
     savedAt: new Date().toISOString(),
     currentId: stringValue(library?.currentId),
+    playlists,
     tracks: tracks
       .map(toSavedTrack)
       .filter((track) => track.path && isAudioFile(track.path))
   };
+}
+
+async function writeSavedLibrary(library) {
+  const payload = savedLibraryPayload(library);
 
   const storePath = libraryStorePath();
 
   await fs.mkdir(path.dirname(storePath), { recursive: true });
   await fs.writeFile(storePath, JSON.stringify(payload, null, 2), "utf8");
+
+  return {
+    ok: true,
+    count: payload.tracks.length
+  };
+}
+
+function writeSavedLibrarySync(library) {
+  const payload = savedLibraryPayload(library);
+  const storePath = libraryStorePath();
+
+  fsSync.mkdirSync(path.dirname(storePath), { recursive: true });
+  fsSync.writeFileSync(storePath, JSON.stringify(payload, null, 2), "utf8");
 
   return {
     ok: true,
@@ -746,25 +804,6 @@ async function chooseMusicFolder() {
   return importPaths(filePaths);
 }
 
-async function chooseImageFile() {
-  const { canceled, filePaths } = await dialog.showOpenDialog({
-    title: "Choose cover image",
-    properties: ["openFile"],
-    filters: [
-      {
-        name: "Images",
-        extensions: ["jpg", "jpeg", "png", "webp"]
-      }
-    ]
-  });
-
-  if (canceled || !filePaths[0]) {
-    return "";
-  }
-
-  return pathToFileURL(filePaths[0]).toString();
-}
-
 async function openFilesForWindow(win) {
   const tracks = await chooseAudioFiles();
 
@@ -780,18 +819,6 @@ async function openFolderForWindow(win) {
     win.webContents.send("library:imported-tracks", tracks);
   }
 }
-
-ipcMain.handle("library:open-files", async () => {
-  return chooseAudioFiles();
-});
-
-ipcMain.handle("library:open-folder", async () => {
-  return chooseMusicFolder();
-});
-
-ipcMain.handle("library:choose-image", async () => {
-  return chooseImageFile();
-});
 
 ipcMain.handle("library:import-paths", async (_event, paths) => {
   if (!Array.isArray(paths)) {
@@ -809,17 +836,15 @@ ipcMain.handle("library:save", async (_event, library) => {
   return writeSavedLibrary(library);
 });
 
-ipcMain.handle("flac-library:scan-folder", async (event) => {
-  const win = BrowserWindow.fromWebContents(event.sender);
-
-  if (!win) {
-    return {
+ipcMain.on("library:save-sync", (event, library) => {
+  try {
+    event.returnValue = writeSavedLibrarySync(library);
+  } catch (error) {
+    event.returnValue = {
       ok: false,
-      reason: "window-missing"
+      error: error.message
     };
   }
-
-  return chooseAndStartFlacScan(win);
 });
 
 ipcMain.handle("flac-library:choose-folder", async (event) => {
@@ -868,45 +893,8 @@ ipcMain.handle("flac-library:cancel-scan", async () => {
   };
 });
 
-ipcMain.handle("flac-library:get-scan-state", async () => {
-  return activeFlacScan ? {
-    running: true,
-    id: activeFlacScan.id,
-    rootPath: activeFlacScan.rootPath,
-    startedAt: activeFlacScan.startedAt
-  } : {
-    running: false
-  };
-});
-
 ipcMain.handle("flac-library:get-tracks", async () => {
   return flacLibraryStore.getTracks();
-});
-
-ipcMain.handle("flac-library:get-albums", async () => {
-  const tracks = await flacLibraryStore.getTracks();
-  const albums = new Map();
-
-  for (const track of tracks) {
-    const artist = track.artist || "Unknown Artist";
-    const title = track.album || "Unknown Album";
-    const key = `${artist.toLowerCase()}::${title.toLowerCase()}`;
-    const album = albums.get(key) || {
-      key,
-      title,
-      artist,
-      tracks: 0,
-      duration: 0,
-      fileSize: 0
-    };
-
-    album.tracks += 1;
-    album.duration += track.duration || 0;
-    album.fileSize += track.fileSize || 0;
-    albums.set(key, album);
-  }
-
-  return Array.from(albums.values()).sort((a, b) => a.artist.localeCompare(b.artist) || a.title.localeCompare(b.title));
 });
 
 ipcMain.handle("flac-library:get-stats", async () => {
@@ -945,10 +933,6 @@ ipcMain.handle("library:show-item-in-folder", async (_event, filePath) => {
   }
 });
 
-ipcMain.handle("app:lifecycle-status", async () => {
-  return lifecycleStubs.getStatus();
-});
-
 ipcMain.handle("license:activate", async (_event, licenseKey) => {
   return licenseManager.activateLicense(licenseKey);
 });
@@ -957,82 +941,8 @@ ipcMain.handle("license:validate", async () => {
   return licenseManager.validateLicense();
 });
 
-ipcMain.handle("license:deactivate", async () => {
-  return licenseManager.deactivateLicense();
-});
-
 ipcMain.handle("license:get-state", async () => {
   return licenseManager.getLicenseState();
-});
-
-ipcMain.handle("replay-gain:analyze-track", async (_event, trackPath) => {
-  if (!isAbsolutePath(trackPath)) {
-    return {
-      ok: false,
-      reason: "invalid-path"
-    };
-  }
-
-  const track = await flacLibraryStore.getTrackByPath(trackPath);
-
-  if (!track) {
-    return {
-      ok: false,
-      reason: "track-missing"
-    };
-  }
-
-  await flacLibraryStore.upsertTrack({
-    absolutePath: trackPath,
-    replayGainStatus: "analyzing"
-  });
-
-  const result = await replayGainService.analyzeTrack(trackPath);
-  await flacLibraryStore.upsertTrack({
-    absolutePath: trackPath,
-    replayGainStatus: result.status,
-    replayGainError: result.error || "",
-    replayGainAnalyzedAt: new Date().toISOString()
-  });
-
-  return {
-    ok: true,
-    result
-  };
-});
-
-ipcMain.handle("replay-gain:analyze-album", async (_event, trackIds) => {
-  const inputIds = Array.isArray(trackIds) ? trackIds.filter(isAbsolutePath) : [];
-  const ids = [];
-
-  for (const trackPath of inputIds) {
-    if (await flacLibraryStore.getTrackByPath(trackPath)) {
-      ids.push(trackPath);
-    }
-  }
-
-  for (const trackPath of ids) {
-    await flacLibraryStore.upsertTrack({
-      absolutePath: trackPath,
-      replayGainStatus: "analyzing"
-    });
-  }
-
-  const result = await replayGainService.analyzeAlbum(ids);
-
-  for (const trackPath of ids) {
-    await flacLibraryStore.upsertTrack({
-      absolutePath: trackPath,
-      replayGainStatus: result.status,
-      replayGainError: result.error || "",
-      replayGainAnalyzedAt: new Date().toISOString()
-    });
-  }
-
-  return {
-    ok: true,
-    result
-  };
 });
 
 ipcMain.handle("app:supported-extensions", () => {
@@ -1040,7 +950,6 @@ ipcMain.handle("app:supported-extensions", () => {
 });
 
 app.whenReady().then(() => {
-  lifecycleStubs.init();
   createWindow();
 
   app.on("activate", () => {

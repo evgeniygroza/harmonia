@@ -134,8 +134,7 @@ function baseTrack(filePath, stats) {
     hasEmbeddedCover: false,
     scanStatus: "pending",
     scanError: "",
-    lastScannedAt: new Date().toISOString(),
-    replayGainStatus: "not_analyzed"
+    lastScannedAt: new Date().toISOString()
   };
 }
 
@@ -174,6 +173,8 @@ async function scanFlacFile(filePath) {
       artist,
       album,
       title: title || fallbackTitle(filePath),
+      genre: Array.isArray(common.genre) ? common.genre[0] || "" : "",
+      composer: Array.isArray(common.composer) ? common.composer.join(", ") : "",
       hasTitleMetadata: Boolean(title),
       hasArtistMetadata: Boolean(artist),
       hasAlbumMetadata: Boolean(album),
