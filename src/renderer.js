@@ -12,8 +12,9 @@ const viewSubtitle = document.getElementById("viewSubtitle");
 const topbarControls = document.getElementById("topbarControls");
 const backButton = document.getElementById("backButton");
 const globalSearch = document.getElementById("globalSearch");
-const sidebarScan = document.getElementById("sidebarScan");
 const navItems = Array.from(document.querySelectorAll(".nav-item"));
+const navGroupToggles = Array.from(document.querySelectorAll("[data-sidebar-toggle]"));
+const themeIconImages = Array.from(document.querySelectorAll("[data-theme-icon='app']"));
 const toast = document.getElementById("toast");
 
 const panelFavorite = document.getElementById("panelFavorite");
@@ -96,6 +97,7 @@ const fallbackApi = {
   activateLicense: async () => ({ success: false, code: "SERVER_ERROR", message: "Server unavailable" }),
   validateLicense: async () => ({ success: false, code: "SERVER_ERROR", message: "Server unavailable" }),
   getLicenseState: async () => ({ active: false, status: "inactive" }),
+  setAppIconTheme: async () => ({ ok: false }),
   onFlacScanProgress: () => {},
   onFlacScanComplete: () => {},
   onImportedTracks: () => {},
@@ -108,13 +110,76 @@ const fallbackApi = {
 const api = window.playerApi || fallbackApi;
 const systemPrefersDark = window.matchMedia("(prefers-color-scheme: dark)");
 const THEME_OPTIONS = new Set(["dark", "light", "system"]);
+const ACCENT_COLORS = {
+  graphite: {
+    label: "Graphite",
+    dark: { hex: "#a8adb5", rgb: "168, 173, 181" },
+    light: { hex: "#666d76", rgb: "102, 109, 118" }
+  },
+  blue: {
+    label: "Blue",
+    dark: { hex: "#0a84ff", rgb: "10, 132, 255" },
+    light: { hex: "#007aff", rgb: "0, 122, 255" }
+  },
+  purple: {
+    label: "Purple",
+    dark: { hex: "#bf5af2", rgb: "191, 90, 242" },
+    light: { hex: "#af52de", rgb: "175, 82, 222" }
+  },
+  pink: {
+    label: "Pink",
+    dark: { hex: "#ff375f", rgb: "255, 55, 95" },
+    light: { hex: "#ff2d55", rgb: "255, 45, 85" }
+  },
+  red: {
+    label: "Red",
+    dark: { hex: "#ff453a", rgb: "255, 69, 58" },
+    light: { hex: "#ff3b30", rgb: "255, 59, 48" }
+  },
+  orange: {
+    label: "Orange",
+    dark: { hex: "#ff9f0a", rgb: "255, 159, 10" },
+    light: { hex: "#ff9500", rgb: "255, 149, 0" }
+  },
+  yellow: {
+    label: "Yellow",
+    dark: { hex: "#ffd60a", rgb: "255, 214, 10" },
+    light: { hex: "#ffcc00", rgb: "255, 204, 0" }
+  },
+  green: {
+    label: "Green",
+    dark: { hex: "#30d158", rgb: "48, 209, 88" },
+    light: { hex: "#34c759", rgb: "52, 199, 89" }
+  }
+};
+const ACCENT_COLOR_OPTIONS = Object.entries(ACCENT_COLORS).map(([value, color]) => [value, color.label]);
+const SIDEBAR_GROUP_VIEWS = {
+  collection: new Set(["genres", "composers", "years", "recentlyAdded", "recentlyPlayed"]),
+  tools: new Set(["health", "duplicates", "scanner"])
+};
 
 function normalizedTheme(value) {
   return THEME_OPTIONS.has(value) ? value : "dark";
 }
 
+function normalizedAccentColor(value) {
+  return ACCENT_COLORS[value] ? value : "graphite";
+}
+
+function normalizedRepeatMode(value) {
+  return value === "one" ? "one" : "off";
+}
+
+function normalizedView(value) {
+  if (value === "accent") {
+    return "general";
+  }
+  return VALID_VIEWS.has(value) ? value : "albums";
+}
+
 const state = {
-  view: VALID_VIEWS.has(localStorage.getItem("workspaceView")) ? localStorage.getItem("workspaceView") : "albums",
+  view: normalizedView(localStorage.getItem("workspaceView")),
+  resolvedTheme: "",
   query: "",
   pendingQuery: "",
   tracks: [],
@@ -127,8 +192,13 @@ const state = {
   favoriteAlbums: new Set(readJson("favoriteAlbums", [])),
   recentPlays: readJson("recentPlays", []),
   reviewedDuplicates: new Set(readJson("reviewedDuplicates", [])),
+  sidebarGroups: {
+    collection: readJson("sidebarGroups", {}).collection === true,
+    tools: readJson("sidebarGroups", {}).tools === true
+  },
   settings: {
     theme: normalizedTheme(readJson("settings", {}).theme),
+    accentColor: normalizedAccentColor(readJson("settings", {}).accentColor),
     startup: readJson("settings", {}).startup || "restore"
   },
   license: {
@@ -163,7 +233,7 @@ const state = {
   isImporting: false,
   isRestoring: false,
   shuffle: localStorage.getItem("shuffle") === "true",
-  repeat: localStorage.getItem("repeat") || "off",
+  repeat: normalizedRepeatMode(localStorage.getItem("repeat")),
   scan: {
     running: false,
     rootPath: "",
@@ -851,7 +921,9 @@ function hideLicenseGate() {
 
 function renderLicenseGate() {
   const unlocked = isProActive();
-  document.body.classList.toggle("license-pending", !unlocked);
+  const checking = state.gate.status === "checking";
+  document.body.classList.toggle("license-loading", checking && !unlocked);
+  document.body.classList.toggle("license-pending", !checking && !unlocked);
   document.body.classList.toggle("license-unlocked", unlocked);
 
   if (appShell) {
@@ -863,9 +935,9 @@ function renderLicenseGate() {
     return;
   }
 
-  licenseGate.hidden = unlocked;
-  licenseGate.setAttribute("aria-hidden", String(unlocked));
-  licenseGateForm.hidden = state.gate.status === "checking";
+  licenseGate.hidden = unlocked || checking;
+  licenseGate.setAttribute("aria-hidden", String(unlocked || checking));
+  licenseGateForm.hidden = checking;
   licenseGateInput.disabled = state.gate.status === "validating";
   licenseGateSubmit.disabled = state.gate.status === "validating";
   licenseGateSubmit.textContent = state.gate.status === "validating" ? "Checking..." : "Unlock";
@@ -882,13 +954,56 @@ function updateTheme() {
     : normalizedTheme(state.settings.theme);
   root.dataset.theme = resolved;
   root.style.colorScheme = resolved;
+  applyAccentColor(resolved);
+  updateThemeIcons(resolved);
+  notifyAppIconTheme(resolved);
+}
+
+function applyAccentColor(theme) {
+  const selected = ACCENT_COLORS[normalizedAccentColor(state.settings.accentColor)];
+  const color = selected[theme === "light" ? "light" : "dark"];
+  root.dataset.accent = normalizedAccentColor(state.settings.accentColor);
+  root.style.setProperty("--accent", color.hex);
+  root.style.setProperty("--accent-rgb", color.rgb);
+  root.style.setProperty("--accent-soft", `rgba(${color.rgb}, ${theme === "light" ? "0.14" : "0.16"})`);
+}
+
+function updateThemeIcons(theme) {
+  const iconPath = theme === "light" ? "./brand-icon-light.png" : "./brand-icon.png";
+  for (const image of themeIconImages) {
+    if (image.getAttribute("src") !== iconPath) {
+      image.setAttribute("src", iconPath);
+    }
+  }
+}
+
+function notifyAppIconTheme(theme) {
+  if (state.resolvedTheme === theme) {
+    return;
+  }
+
+  state.resolvedTheme = theme;
+  api.setAppIconTheme?.(theme).catch(() => {});
 }
 
 function updateSidebar() {
   for (const item of navItems) {
-    const active = item.dataset.view === state.view;
+    const active = item.dataset.view === state.view || (item.dataset.view === "general" && state.view === "advanced");
     item.classList.toggle("active", active);
     item.setAttribute("aria-pressed", String(active));
+  }
+
+  for (const toggle of navGroupToggles) {
+    const group = toggle.dataset.sidebarToggle;
+    const containsActiveView = SIDEBAR_GROUP_VIEWS[group]?.has(state.view) === true;
+    const expanded = state.sidebarGroups[group] === true || containsActiveView;
+    const section = toggle.closest(".nav-group");
+    const panel = document.querySelector(`[data-sidebar-panel="${group}"]`);
+    toggle.setAttribute("aria-expanded", String(expanded));
+    section?.classList.toggle("expanded", expanded);
+    if (panel) {
+      panel.hidden = !expanded;
+    }
   }
 }
 
@@ -1945,9 +2060,20 @@ function renderSettings(view) {
         ["workspaceView", "albumLayout", "albumSort", "trackSort", "trackSortDirection"].forEach((key) => localStorage.removeItem(key));
         showToast("UI state reset. Restart the app to apply all defaults.");
       })
-    ]), licenseStatusPanel());
+    ]), settingsPanel("Accent Color", [
+      settingAccentPicker(),
+      settingReadout("Selected", ACCENT_COLORS[state.settings.accentColor]?.label || ACCENT_COLORS.graphite.label),
+      settingButton("Default accent", "Graphite", () => {
+        state.settings.accentColor = "graphite";
+        saveSettings();
+        render();
+      })
+    ]), licenseStatusPanel(), settingsPanel("Advanced", [
+      settingNavigationButton("Maintenance and diagnostics", "Open", "advanced")
+    ]));
   } else {
     screen.append(settingsPanel("Maintenance", [
+      settingNavigationButton("General settings", "Open", "general"),
       settingButton("Rebuild library index", "Rebuild", () => refreshScannedLibrary().then(() => showToast("Library index refreshed."))),
       settingReadout("Audio Path", "Chromium/Electron system mixer"),
       settingReadout("Diagnostics", `Electron renderer / ${navigator.platform}`)
@@ -1986,6 +2112,35 @@ function settingButton(label, buttonLabel, onClick) {
   button.type = "button";
   button.addEventListener("click", onClick);
   row.append(makeNode("span", "", label), button);
+  return row;
+}
+
+function settingNavigationButton(label, buttonLabel, view) {
+  return settingButton(label, buttonLabel, () => setView(view));
+}
+
+function settingAccentPicker() {
+  const row = makeNode("div", "setting-row accent-setting-row");
+  const grid = makeNode("div", "accent-color-grid");
+
+  for (const [value, label] of ACCENT_COLOR_OPTIONS) {
+    const selected = value === state.settings.accentColor;
+    const color = ACCENT_COLORS[value];
+    const swatch = makeNode("button", selected ? "accent-swatch active" : "accent-swatch");
+    swatch.type = "button";
+    swatch.setAttribute("aria-pressed", String(selected));
+    swatch.setAttribute("aria-label", label);
+    swatch.style.setProperty("--swatch", color.light.hex);
+    swatch.append(makeNode("span", "accent-swatch-dot"), makeNode("strong", "", label));
+    swatch.addEventListener("click", () => {
+      state.settings.accentColor = normalizedAccentColor(value);
+      saveSettings();
+      render();
+    });
+    grid.append(swatch);
+  }
+
+  row.append(makeNode("span", "", "Accent color"), grid);
   return row;
 }
 
@@ -2123,6 +2278,7 @@ function loadCurrentTrack(autoplay, shouldPersist = true) {
     renderPlayer();
     return;
   }
+  audio.loop = state.repeat === "one";
   audio.src = track.url;
   audio.load();
   audio.currentTime = 0;
@@ -2183,8 +2339,6 @@ function nextTrack() {
     const index = Math.max(0, queue.findIndex((track) => track.id === current?.id));
     if (index < queue.length - 1) {
       next = queue[index + 1];
-    } else if (state.repeat === "all") {
-      next = queue[0];
     } else {
       audio.pause();
       audio.currentTime = 0;
@@ -2210,12 +2364,21 @@ function previousTrack() {
   }
 }
 
+function applyRepeatMode() {
+  state.repeat = normalizedRepeatMode(state.repeat);
+  audio.loop = state.repeat === "one";
+  repeatButton.classList.toggle("active", state.repeat === "one");
+  repeatButton.classList.toggle("repeat-one", state.repeat === "one");
+  repeatButton.setAttribute("aria-label", state.repeat === "one" ? "Repeat Track On" : "Repeat Track");
+  repeatButton.title = state.repeat === "one" ? "Repeat track is on" : "Repeat track";
+}
+
 function renderPlayer() {
   const track = getCurrentTrack();
   playPauseButton.classList.toggle("is-playing", state.isPlaying);
   playPauseButton.setAttribute("aria-label", state.isPlaying ? "Pause" : "Play");
   shuffleButton.classList.toggle("active", state.shuffle);
-  repeatButton.classList.toggle("active", state.repeat !== "off");
+  applyRepeatMode();
   outputStatus.textContent = track ? `${track.extension || "FLAC"}${track.sampleRate ? ` / ${formatSampleRate(track.sampleRate)}` : ""}` : "FLAC";
 
   if (!track) {
@@ -2366,11 +2529,6 @@ async function refreshLicenseState() {
   if (cached) {
     applyLicenseState(cached);
   }
-
-  const validated = await api.validateLicense?.().catch(() => null);
-  if (validated) {
-    applyLicenseState(validated);
-  }
 }
 
 async function restoreLibrary() {
@@ -2415,8 +2573,13 @@ function wireEvents() {
   });
 
   navItems.forEach((item) => item.addEventListener("click", () => setView(item.dataset.view)));
+  navGroupToggles.forEach((toggle) => toggle.addEventListener("click", () => {
+    const group = toggle.dataset.sidebarToggle;
+    state.sidebarGroups[group] = !(state.sidebarGroups[group] === true);
+    writeJson("sidebarGroups", state.sidebarGroups);
+    updateSidebar();
+  }));
   backButton.addEventListener("click", goBack);
-  sidebarScan.addEventListener("click", () => setView("scanner"));
   globalSearch.addEventListener("input", () => {
     state.pendingQuery = globalSearch.value.trim();
     window.clearTimeout(queryTimer);
@@ -2435,7 +2598,7 @@ function wireEvents() {
     renderPlayer();
   });
   repeatButton.addEventListener("click", () => {
-    state.repeat = state.repeat === "off" ? "all" : state.repeat === "all" ? "one" : "off";
+    state.repeat = state.repeat === "one" ? "off" : "one";
     localStorage.setItem("repeat", state.repeat);
     renderPlayer();
   });

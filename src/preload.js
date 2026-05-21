@@ -55,6 +55,7 @@ contextBridge.exposeInMainWorld("playerApi", {
   showItemInFolder: (filePath) => ipcRenderer.invoke("library:show-item-in-folder", filePath),
   getLibraryStats: () => ipcRenderer.invoke("flac-library:get-stats"),
   getProblemTracks: () => ipcRenderer.invoke("flac-library:get-problem-tracks"),
+  setAppIconTheme: (theme) => ipcRenderer.invoke("app:set-icon-theme", theme),
   activateLicense: (licenseKey) => ipcRenderer.invoke("license:activate", licenseKey),
   validateLicense: () => ipcRenderer.invoke("license:validate"),
   getLicenseState: () => ipcRenderer.invoke("license:get-state"),

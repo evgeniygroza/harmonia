@@ -10,7 +10,9 @@
     "clean:electron-xattrs": "xattr -cr node_modules/electron/dist/Electron.app 2>/dev/null || true; find node_modules/electron/dist/Electron.app -exec xattr -d com.apple.FinderInfo {} \\; -exec xattr -d 'com.apple.fileprovider.fpfs#P' {} \\; 2>/dev/null || true",
     "start": "electron .",
     "pack:mac": "npm run clean:electron-xattrs && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dir",
-    "dist:mac": "npm run clean:electron-xattrs && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg"
+    "dist:mac": "npm run clean:electron-xattrs && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg",
+    "pack:win": "electron-builder --win dir --x64",
+    "dist:win": "electron-builder --win nsis --x64"
   },
   "dependencies": {
     "music-metadata": "^11.12.3"
@@ -32,6 +34,13 @@
       "identity": null,
       "target": [
         "dmg",
+        "dir"
+      ]
+    },
+    "win": {
+      "icon": "build/app-icon.png",
+      "target": [
+        "nsis",
         "dir"
       ]
     }

@@ -12,6 +12,7 @@ const OFFLINE_GRACE_MS = 14 * 24 * 60 * 60 * 1000;
 const CACHE_FILE = "license.json";
 const DEFAULT_LICENSE_API_URL = "https://harmonia-bot-l4ed.onrender.com";
 const DEFAULT_LOCAL_LICENSE_DB_PATH = path.join(os.homedir(), "harmonia-bot", "harmonia-bot.sqlite");
+const DEFAULT_ACTIVATIONS_ALLOWED = 2;
 
 function normalizeLicenseKey(input) {
   const raw = String(input || "").trim().toUpperCase();
@@ -112,14 +113,22 @@ function numberValue(value) {
   return Number.isFinite(Number(value)) ? Number(value) : 0;
 }
 
+function activationAllowance(value) {
+  if (numberValue(value) < 0) {
+    return -1;
+  }
+
+  return Math.max(DEFAULT_ACTIVATIONS_ALLOWED, numberValue(value));
+}
+
 function publicState(cache, overrides = {}) {
-  const active = Boolean(cache && isGraceActive(cache));
+  const active = Boolean(cache?.licenseKey);
 
   return {
     active,
     status: active ? "active" : "inactive",
     licenseType: cache?.licenseType || "",
-    activationsAllowed: numberValue(cache?.activationsAllowed),
+    activationsAllowed: active ? activationAllowance(cache?.activationsAllowed) : 0,
     activationsUsed: numberValue(cache?.activationsUsed),
     activatedAt: cache?.activatedAt || "",
     lastValidatedAt: cache?.lastValidatedAt || "",
@@ -293,13 +302,13 @@ function createLicenseManager({
         `);
         const used = await localActivationCount(licenseKey);
         return endpoint === "/validate"
-          ? { success: true, licenseType: license.license_type || "lifetime", status: "active", activationsAllowed: numberValue(license.activations_allowed), activationsUsed: used }
+          ? { success: true, licenseType: license.license_type || "lifetime", status: "active", activationsAllowed: activationAllowance(license.activations_allowed), activationsUsed: used }
           : localSuccess(license, used, "Harmonia activated");
       }
 
       const used = await localActivationCount(licenseKey);
-      const allowed = numberValue(license.activations_allowed);
-      if (used >= allowed) {
+      const allowed = activationAllowance(license.activations_allowed);
+      if (allowed >= 0 && used >= allowed) {
         return { success: false, code: "ACTIVATION_LIMIT_REACHED", message: "Activation limit reached" };
       }
 
@@ -326,7 +335,7 @@ function createLicenseManager({
     return {
       success: true,
       licenseType: license.license_type || "lifetime",
-      activationsAllowed: numberValue(license.activations_allowed),
+      activationsAllowed: activationAllowance(license.activations_allowed),
       activationsUsed: used,
       token: crypto.randomBytes(32).toString("base64url"),
       message
@@ -364,7 +373,7 @@ function createLicenseManager({
       activatedAt: cache?.licenseKey === licenseKey && cache?.activatedAt ? cache.activatedAt : now,
       lastValidatedAt: now,
       licenseType: String(response.licenseType || "lifetime"),
-      activationsAllowed: numberValue(response.activationsAllowed),
+      activationsAllowed: activationAllowance(response.activationsAllowed),
       activationsUsed: numberValue(response.activationsUsed)
     };
 
@@ -393,7 +402,7 @@ function createLicenseManager({
         ...cache,
         lastValidatedAt: new Date().toISOString(),
         licenseType: String(response.licenseType || cache.licenseType || "lifetime"),
-        activationsAllowed: numberValue(response.activationsAllowed ?? cache.activationsAllowed),
+        activationsAllowed: activationAllowance(response.activationsAllowed ?? cache.activationsAllowed),
         activationsUsed: numberValue(response.activationsUsed ?? cache.activationsUsed)
       };
       await writeCache(nextCache);

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, dialog, ipcMain, shell } = require("electron");
+const { app, BrowserWindow, Menu, dialog, ipcMain, nativeImage, shell } = require("electron");
 const crypto = require("node:crypto");
 const fsSync = require("node:fs");
 const fs = require("node:fs/promises");
@@ -40,7 +40,11 @@ const licenseManager = createLicenseManager({
   userDataPath: app.getPath("userData"),
   appVersion: app.getVersion()
 });
-const appIconPath = path.join(__dirname, "..", "build", "app-icon.png");
+const appIconPaths = {
+  dark: path.join(__dirname, "brand-icon.png"),
+  light: path.join(__dirname, "brand-icon-light.png")
+};
+const fallbackAppIconPath = path.join(__dirname, "..", "build", "app-icon.png");
 
 const ARTWORK_FILENAMES = [
   "cover",
@@ -54,6 +58,7 @@ const ARTWORK_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp"]);
 
 let parseFile;
 let activeFlacScan = null;
+let mainWindow = null;
 
 async function getMetadataParser() {
   if (!parseFile) {
@@ -64,10 +69,12 @@ async function getMetadataParser() {
 }
 
 function createWindow() {
-  const hasDevIcon = fsSync.existsSync(appIconPath);
+  const initialIconPath = appIconPathForTheme("dark");
+  const initialIcon = nativeImage.createFromPath(initialIconPath);
+  const hasDevIcon = fsSync.existsSync(initialIconPath);
 
-  if (process.platform === "darwin" && !app.isPackaged && hasDevIcon) {
-    app.dock.setIcon(appIconPath);
+  if (process.platform === "darwin" && !initialIcon.isEmpty()) {
+    app.dock.setIcon(initialIcon);
   }
 
   const win = new BrowserWindow({
@@ -76,7 +83,7 @@ function createWindow() {
     minWidth: 920,
     minHeight: 620,
     backgroundColor: "#241f1b",
-    ...(hasDevIcon ? { icon: appIconPath } : {}),
+    ...(hasDevIcon && !initialIcon.isEmpty() ? { icon: initialIcon } : {}),
     title: APP_NAME,
     titleBarStyle: "hiddenInset",
     trafficLightPosition: { x: 16, y: 18 },
@@ -86,8 +93,14 @@ function createWindow() {
       nodeIntegration: false
     }
   });
+  mainWindow = win;
 
   win.loadFile(path.join(__dirname, "index.html"));
+  win.on("closed", () => {
+    if (mainWindow === win) {
+      mainWindow = null;
+    }
+  });
   win.webContents.on("before-input-event", (event, input) => {
     const closesWindow = input.key?.toLowerCase() === "w" && (process.platform === "darwin" ? input.meta : input.control);
 
@@ -97,6 +110,37 @@ function createWindow() {
     }
   });
   createNativeMenu(win);
+}
+
+function normalizedIconTheme(theme) {
+  return theme === "light" ? "light" : "dark";
+}
+
+function appIconPathForTheme(theme) {
+  const themedIconPath = appIconPaths[normalizedIconTheme(theme)];
+  return fsSync.existsSync(themedIconPath) ? themedIconPath : fallbackAppIconPath;
+}
+
+function setRuntimeAppIcon(theme, win = mainWindow) {
+  const iconPath = appIconPathForTheme(theme);
+  if (!fsSync.existsSync(iconPath)) {
+    return { ok: false, error: "icon-missing" };
+  }
+
+  const icon = nativeImage.createFromPath(iconPath);
+  if (icon.isEmpty()) {
+    return { ok: false, error: "icon-empty" };
+  }
+
+  if (process.platform === "darwin" && app.dock) {
+    app.dock.setIcon(icon);
+  }
+
+  if (win && typeof win.setIcon === "function") {
+    win.setIcon(icon);
+  }
+
+  return { ok: true, theme: normalizedIconTheme(theme) };
 }
 
 function createNativeMenu(win) {
@@ -943,6 +987,10 @@ ipcMain.handle("license:validate", async () => {
 
 ipcMain.handle("license:get-state", async () => {
   return licenseManager.getLicenseState();
+});
+
+ipcMain.handle("app:set-icon-theme", (event, theme) => {
+  return setRuntimeAppIcon(theme, BrowserWindow.fromWebContents(event.sender));
 });
 
 ipcMain.handle("app:supported-extensions", () => {
