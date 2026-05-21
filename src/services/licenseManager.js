@@ -10,7 +10,7 @@ const execFileAsync = promisify(execFile);
 
 const OFFLINE_GRACE_MS = 14 * 24 * 60 * 60 * 1000;
 const CACHE_FILE = "license.json";
-const DEFAULT_LICENSE_API_URL = "https://harmonia-bot-l4ed.onrender.com";
+const DEFAULT_LICENSE_API_URL = "https://harmonia-bot-production.up.railway.app";
 const DEFAULT_LOCAL_LICENSE_DB_PATH = path.join(os.homedir(), "harmonia-bot", "harmonia-bot.sqlite");
 const DEFAULT_ACTIVATIONS_ALLOWED = 2;
 
